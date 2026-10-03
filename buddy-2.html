@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Buddy</title>
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@500;700;900&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#f3efff;--mute:#9d93c9;--b:#7fdcff;box-sizing:border-box}
+html,body{height:100%;margin:0;background:#000;color:var(--ink);font-family:"Nunito","Trebuchet MS",system-ui,sans-serif;overflow:hidden;-webkit-tap-highlight-color:transparent}
+#c{position:fixed;inset:0;width:100%;height:100%}
+.ui{position:fixed;left:0;right:0;display:flex;flex-direction:column;align-items:center;pointer-events:none;padding:0 28px;text-align:center}
+#top{top:0;flex-direction:row;justify-content:space-between;padding-top:calc(env(safe-area-inset-top,0px) + 26px)}
+h1{margin:0;font-size:22px;font-weight:900;letter-spacing:.5px;opacity:0}
+#gear{pointer-events:auto;width:42px;height:42px;border-radius:50%;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.06);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);color:var(--ink);font-size:18px;cursor:pointer}
+#bot{bottom:calc(env(safe-area-inset-bottom,0px) + 40px);gap:14px}
+#cap{font-size:22px;font-weight:700;line-height:1.3;max-height:2.7em;overflow:hidden;text-shadow:0 2px 16px #000}
+#hint{font-size:15px;color:var(--mute)}
+#act{display:flex;gap:8px;justify-content:center;pointer-events:auto}
+#act a{color:#fff;font-weight:800;text-decoration:none;padding:14px 24px;border-radius:28px;font-size:17px;border:1px solid rgba(255,255,255,.35);background:rgba(255,255,255,.12);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);box-shadow:0 0 24px rgba(143,77,255,.45)}
+#sheet{position:fixed;left:12px;right:12px;bottom:calc(env(safe-area-inset-bottom,0px) + 12px);max-width:480px;margin:0 auto;padding:16px;border-radius:26px;border:1px solid rgba(255,255,255,.22);background:rgba(20,12,50,.8);backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);display:none}
+#sheet.on{display:block}
+#sheet p{margin:0 0 10px;font-weight:800}
+.row{display:flex;gap:8px;margin-bottom:8px}
+input{flex:1;min-width:0;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);color:var(--ink);border-radius:18px;padding:11px 14px;font:inherit;font-size:16px}
+.btn{font:inherit;font-weight:800;border:1px solid rgba(255,255,255,.3);background:rgba(255,255,255,.14);color:var(--ink);border-radius:18px;padding:11px 16px;cursor:pointer}
+#clist{margin:6px 0 10px;padding-left:18px;color:var(--mute);font-size:14px}
+:focus-visible{outline:3px solid var(--b);outline-offset:2px}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="ui" id="top"><span style="width:42px"></span><h1 id="ttl">Buddy</h1><button id="gear" aria-label="Contacts">👤</button></div>
+<div class="ui" id="bot"><div id="cap"></div><div id="act"></div><div id="hint">Tap once to start Buddy</div></div>
+<div id="sheet">
+  <p>Contacts for “call …”</p>
+  <div class="row"><input id="cn" placeholder="Name (e.g. mom)"><input id="cp" placeholder="Number" inputmode="tel"></div>
+  <ul id="clist"></ul>
+  <div class="row"><button class="btn" id="cs">Save</button><button class="btn" id="cx">Close</button></div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+let state='sleep',armed=false,ctx=null,rec=null,sleepT=null,voice=null,lock=null;
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+const WAKE=/\b(?:(?:hey|hi|hello|ok|okay)\s+(?:buddy|buddi|bodie|body))\b|\bbuddy\b/;
+function hintFor(){return state==='sleep'?(armed?'Say “Hey Buddy”':'Tap once to start Buddy'):state==='listening'?'Listening…':''}
+function setState(s){state=s;$('hint').textContent=hintFor()}
+
+/* contacts */
+let mem={};
+try{mem=JSON.parse(localStorage.getItem('buddy_contacts')||'{}')}catch(e){}
+const ALIAS={mummy:'mom',mother:'mom',mama:'mom',mum:'mom',papa:'dad',father:'dad'};
+function showC(){const u=$('clist');u.innerHTML='';Object.keys(mem).forEach(k=>{const li=document.createElement('li');li.textContent=k+': '+mem[k];u.appendChild(li)})}
+$('cs').onclick=()=>{const n=$('cn').value.trim().toLowerCase(),p=$('cp').value.trim();if(n&&p){mem[ALIAS[n]||n]=p;try{localStorage.setItem('buddy_contacts',JSON.stringify(mem))}catch(e){}showC();$('cn').value='';$('cp').value=''}};
+showC();
+$('gear').onclick=e=>{e.stopPropagation();$('sheet').classList.toggle('on')};
+$('cx').onclick=()=>$('sheet').classList.remove('on');
+$('sheet').addEventListener('click',e=>e.stopPropagation());
+$('act').addEventListener('click',e=>e.stopPropagation());
+
+/* voice out: a calm female voice, calls you boss */
+function pickVoice(){
+  if(!('speechSynthesis' in window))return;
+  const vs=speechSynthesis.getVoices(),en=vs.filter(v=>/^en/i.test(v.lang));
+  voice=en.find(v=>/female|aria|jenny|zira|samantha|aditi|raveena|heera|neerja|ava|allison|karen|serena/i.test(v.name))||en.find(v=>/en[-_]IN/i.test(v.lang))||en[0]||vs[0]||null;
+}
+if('speechSynthesis' in window){pickVoice();speechSynthesis.onvoiceschanged=pickVoice}
+function say(text,after){
+  stopRec();clearTimeout(sleepT);$('cap').textContent=text;
+  const done=()=>{after?after():afterReply()};
+  if(!('speechSynthesis' in window)){setState('speaking');setTimeout(done,1500);return}
+  speechSynthesis.cancel();
+  const u=new SpeechSynthesisUtterance(text);
+  if(voice){u.voice=voice;u.lang=voice.lang}else u.lang=navigator.language||'en-US';
+  u.rate=.97;u.pitch=1.08;
+  let fin=false;const end=()=>{if(!fin){fin=true;done()}};
+  u.onend=u.onerror=end;
+  setState('speaking');speechSynthesis.speak(u);
+}
+function afterReply(){
+  setState('ready');clearTimeout(sleepT);
+  sleepT=setTimeout(goSleep,$('act').children.length?15000:2500);
+}
+function card(label,href){const a=document.createElement('a');a.textContent=label;a.href=href;a.target='_blank';a.rel='noopener';$('act').appendChild(a)}
+function beep(){try{ctx=ctx||new (window.AudioContext||window.webkitAudioContext)();[0,.35,.7].forEach(d=>{const o=ctx.createOscillator(),g=ctx.createGain();o.frequency.value=880;o.connect(g);g.connect(ctx.destination);g.gain.setValueAtTime(.25,ctx.currentTime+d);g.gain.exponentialRampToValueAtTime(.001,ctx.currentTime+d+.3);o.start(ctx.currentTime+d);o.stop(ctx.currentTime+d+.32)})}catch(e){}}
+
+/* commands */
+const APPS={youtube:'https://m.youtube.com',whatsapp:'https://wa.me/',instagram:'https://www.instagram.com',gmail:'https://mail.google.com',maps:'https://maps.google.com',google:'https://www.google.com',facebook:'https://m.facebook.com',spotify:'https://open.spotify.com',twitter:'https://x.com',telegram:'https://web.telegram.org',amazon:'https://www.amazon.com'};
+function handle(raw){
+  const t=raw.toLowerCase().replace(/\b([ap])\.m\./g,'$1m').replace(/^(hey |hi |ok |okay )?buddy[,. ]*/,'').trim();
+  $('act').innerHTML='';stopRec();setState('thinking');
+  setTimeout(()=>run(t,raw),700);
+}
+function run(t,raw){
+  let m;
+  if((m=t.match(/^(?:please )?(?:call|phone|dial)\s+(.+)/))){
+    let n=m[1].replace(/[^\w\s+]/g,'').trim(),num=n.replace(/[\s-]/g,'');
+    if(/^\+?\d{4,}$/.test(num)){say('Calling '+num+', boss. Tap the button.');card('📞 Call '+num,'tel:'+num);return}
+    n=ALIAS[n]||n;
+    if(mem[n]){say('Calling '+n+', boss. Tap the button to dial.');card('📞 Call '+n,'tel:'+mem[n].replace(/[^\d+]/g,''))}
+    else{say('I don’t have a number for '+n+', boss. Please add it in contacts.');$('sheet').classList.add('on')}
+    return}
+  if((m=t.match(/timer.*?(\d+)\s*(second|sec|minute|min|hour|hr)/))){
+    const v=+m[1],u=m[2][0],ms=v*(u==='s'?1000:u==='h'?3600000:60000);
+    say('Timer set for '+v+' '+m[2]+(v>1?'s':'')+', boss. Keep this page open.');
+    setTimeout(()=>{beep();say('Boss, your timer is up!')},ms);return}
+  if((m=t.match(/alarm.*?(\d{1,2})(?:[:.\s](\d{2}))?\s*(am|pm)?/))){
+    let h=+m[1],mi=+(m[2]||0);if(m[3]==='pm'&&h<12)h+=12;if(m[3]==='am'&&h===12)h=0;
+    if(h>23||mi>59){say('Sorry boss, I didn’t catch the time.');return}
+    const hh=String(h).padStart(2,'0'),mm=String(mi).padStart(2,'0');
+    say('Alarm for '+hh+':'+mm+', boss. Tap to set it in your Clock app.');
+    card('⏰ Set '+hh+':'+mm+' in Clock','intent:#Intent;action=android.intent.action.SET_ALARM;i.android.intent.extra.alarm.HOUR='+h+';i.android.intent.extra.alarm.MINUTES='+mi+';S.android.intent.extra.alarm.MESSAGE=Buddy;end');
+    const d=new Date();d.setHours(h,mi,0,0);if(d<new Date())d.setDate(d.getDate()+1);
+    setTimeout(()=>{beep();say('Boss, it is '+hh+':'+mm+'. Time for your alarm!')},d-new Date());return}
+  if((m=t.match(/^(?:open|launch|start)\s+(.+)/))){
+    const k=m[1].replace(/^the /,'').replace(/ app$/,'').trim();
+    if(APPS[k]){say('Opening '+k+', boss. Tap the button.');card('Open '+k,APPS[k])}
+    else say('Sorry boss, I can’t open '+k+' from a web page yet. The Android app version will.');
+    return}
+  if((m=t.match(/(?:where is|navigate to|directions to|take me to|find|show me)\s+(.+)/))||(m=t.match(/(.+\b(?:near me|nearby))$/))){
+    const q=m[1].trim();say('Searching maps for '+q+', boss.');
+    card('📍 Open in Maps','https://www.google.com/maps/search/?api=1&query='+encodeURIComponent(q));return}
+  if((m=t.match(/^(?:search|google|look up)\s+(.+?)(?:\s+on\s+(youtube|google|maps))?$/))){
+    const q=m[1],w=m[2]||'google';say('Searching '+w+' for '+q+', boss.');
+    const url=w==='youtube'?'https://m.youtube.com/results?search_query=':w==='maps'?'https://www.google.com/maps/search/?api=1&query=':'https://www.google.com/search?q=';
+    card('🔎 See results',url+encodeURIComponent(q));return}
+  if(/\btime\b/.test(t)){say('Boss, it is '+new Date().toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})+'.');return}
+  if(/\b(date|day is it|today)\b/.test(t)){say('Boss, today is '+new Date().toLocaleDateString([], {weekday:'long',month:'long',day:'numeric'})+'.');return}
+  if(/who are you|your name/.test(t)){say('I am Buddy, your personal assistant, boss.');return}
+  if(/^(hi|hello|hey|thank)/.test(t)){say('Always happy to help, boss.');return}
+  say('Sorry boss, I’m not sure how to do that yet. Want me to search for it?');
+  card('🔎 Search “'+raw.slice(0,24)+'”','https://www.google.com/search?q='+encodeURIComponent(raw));
+}
+
+/* listening: wake word, then one command */
+function stopRec(){if(rec){rec.onend=rec.onresult=rec.onerror=null;try{rec.abort()}catch(e){}rec=null}}
+function mk(){const r=new SR();r.lang=navigator.language||'en-US';return r}
+function micBlocked(){armed=false;stopRec();setState('sleep');$('hint').textContent='Microphone is blocked. Allow it in Chrome, then reload.'}
+function startWake(){
+  if(!armed||state!=='sleep'||!SR)return;
+  stopRec();rec=mk();rec.continuous=true;rec.interimResults=true;
+  rec.onresult=e=>{let s='';for(let i=e.resultIndex;i<e.results.length;i++)s+=e.results[i][0].transcript;
+    const l=s.toLowerCase();if(WAKE.test(l)){stopRec();wakeUp(l.replace(WAKE,'').trim())}};
+  rec.onerror=e=>{if(e.error==='not-allowed'||e.error==='service-not-allowed')micBlocked()};
+  rec.onend=()=>{if(armed&&state==='sleep')setTimeout(startWake,400)};
+  try{rec.start()}catch(e){}
+}
+function wakeUp(cmd){
+  clearTimeout(sleepT);$('act').innerHTML='';$('cap').textContent='';setState('waking');
+  setTimeout(()=>{
+    if(cmd&&cmd.length>2){$('cap').textContent='“'+cmd+'”';handle(cmd)}
+    else say('Yes, boss?',listenCmd);
+  },900);
+}
+function listenCmd(){
+  if(!SR){say('Voice input needs Chrome, boss.');return}
+  stopRec();rec=mk();rec.interimResults=true;let done=false;
+  rec.onresult=e=>{let s='';for(const r of e.results)s+=r[0].transcript;$('cap').textContent='“'+s+'”';
+    if(e.results[e.results.length-1].isFinal&&!done){done=true;handle(s)}};
+  rec.onerror=e=>{if(e.error==='not-allowed'||e.error==='service-not-allowed')micBlocked();else if(!done){done=true;goSleep()}};
+  rec.onend=()=>{if(!done&&state==='listening')goSleep()};
+  setState('listening');try{rec.start()}catch(e){goSleep()}
+}
+function goSleep(){
+  clearTimeout(sleepT);stopRec();if('speechSynthesis' in window)speechSynthesis.cancel();
+  setState('sleep');$('cap').textContent='';$('act').innerHTML='';setTimeout(startWake,500);
+}
+function arm(){
+  armed=true;
+  try{ctx=ctx||new (window.AudioContext||window.webkitAudioContext)()}catch(e){}
+  try{if('speechSynthesis' in window)speechSynthesis.speak(new SpeechSynthesisUtterance(''))}catch(e){}
+  try{navigator.wakeLock.request('screen').then(l=>{lock=l}).catch(()=>{})}catch(e){}
+  if(!SR){armed=false;$('hint').textContent='Voice needs Chrome on Android.';return false}
+  return true;
+}
+document.body.onclick=()=>{
+  if(!armed){if(arm())wakeUp('');return}
+  if(state==='sleep')wakeUp('');
+  else if(state==='ready'||state==='speaking'){clearTimeout(sleepT);if('speechSynthesis' in window)speechSynthesis.cancel();listenCmd()}
+};
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&armed&&state==='sleep')startWake()});
+
+/* ---------- Buddy: marbled core, glowing ring, screen edge ---------- */
+const cv=$('c'),g=cv.getContext('2d');let W=0,H=0;
+function fit(){const d=Math.min(devicePixelRatio||1,2);W=innerWidth;H=innerHeight;cv.width=W*d;cv.height=H*d;g.setTransform(d,0,0,d,0,0)}
+addEventListener('resize',fit);fit();
+const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+const P={sleep:[0,.6,0],waking:[.1,1.2,1.3],ready:[.06,.8,.35],listening:[.2,2,.5],thinking:[.12,3.5,.45],speaking:[.3,3,.55]};
+let amp=0,lvl=0,show=0;
+function edge(t){
+  if(lvl<.02)return;
+  const m=reduce?0:1,r=Math.min(W,H)*.1,ang=t*.9*m,dx=Math.cos(ang)*W*.8,dy=Math.sin(ang)*H*.8;
+  const gr=g.createLinearGradient(W/2-dx,H/2-dy,W/2+dx,H/2+dy);
+  ['#2f6bff','#8f4dff','#ff4fd8','#3fb0ff','#2f6bff'].forEach((c,i,a)=>gr.addColorStop(i/(a.length-1),c));
+  const pulse=state==='speaking'?1+Math.sin(t*10)*.25*m:state==='thinking'?.8+Math.sin(t*4)*.25*m:1+Math.sin(t*2.5)*.1*m;
+  const v=g.createRadialGradient(W/2,H/2,Math.min(W,H)*.35,W/2,H/2,Math.max(W,H)*.75);
+  v.addColorStop(0,'rgba(124,92,255,0)');v.addColorStop(1,'rgba(124,92,255,'+(.26*lvl*pulse)+')');
+  g.fillStyle=v;g.fillRect(0,0,W,H);
+  g.save();g.globalCompositeOperation='lighter';g.strokeStyle=gr;g.shadowColor='#8a6bff';
+  [[3,.95,8],[14,.4,28],[40,.18,46]].forEach(([w,a,b])=>{
+    g.globalAlpha=Math.min(a*lvl*pulse,1);g.lineWidth=w*pulse;g.shadowBlur=b;
+    g.beginPath();g.roundRect?g.roundRect(0,0,W,H,r):g.rect(0,0,W,H);g.stroke();
+  });
+  g.restore();
+}
+function patch(x,y,r,c,a){const q=g.createRadialGradient(x,y,0,x,y,r);q.addColorStop(0,'rgba('+c+','+a+')');q.addColorStop(1,'rgba('+c+',0)');g.fillStyle=q;g.fillRect(x-r,y-r,r*2,r*2)}
+function frame(ts){
+  const t=ts/1000,[aT,sp,lT]=P[state],m=reduce?0:1;
+  amp+=(aT-amp)*.06;lvl+=(lT-lvl)*.07;
+  const sT=(state==='sleep'||state==='waking')?0:1;show+=(sT-show)*.06;
+  g.clearRect(0,0,W,H);edge(t);
+  $('ttl').style.opacity=show*.85;
+  if(show>.01){
+    const Rb=Math.min(W*.2,H*.13),cx=W/2,cy=H*.42,mod=(state==='speaking'||state==='listening')?1+.5*Math.sin(t*7.3)*Math.sin(t*2.9+1):1;
+    g.save();g.translate(cx,cy);const sc=.55+.45*show;g.scale(sc,sc);g.globalAlpha=show;
+    /* haze */
+    const hz=g.createRadialGradient(0,0,Rb*.8,0,0,Rb*2.6);hz.addColorStop(0,'rgba(110,70,255,.22)');hz.addColorStop(1,'rgba(110,70,255,0)');
+    g.fillStyle=hz;g.fillRect(-Rb*3,-Rb*3,Rb*6,Rb*6);
+    /* marbled core */
+    g.save();g.beginPath();
+    for(let i=0;i<=64;i++){const a=i/64*Math.PI*2,r=Rb*(1+.06*Math.sin(3*a+t*.8*m)+.05*Math.sin(5*a-t*1.2*m)+.03*Math.sin(2*a+t*.5*m)+amp*.25*mod*Math.sin(7*a+t*3*m));
+      i?g.lineTo(Math.cos(a)*r,Math.sin(a)*r):g.moveTo(Math.cos(a)*r,Math.sin(a)*r)}
+    g.closePath();g.fillStyle='#04020c';g.fill();g.clip();
+    patch(-Rb*.4+Math.sin(t*.5*m)*Rb*.15,-Rb*.4,Rb*.9,'47,123,255',.85);
+    patch(Rb*.3,Rb*.6+Math.cos(t*.6*m)*Rb*.1,Rb*.8,'255,79,216',.75);
+    patch(Rb*.55,-Rb*.5,Rb*.5,'166,77,255',.55);
+    for(let j=0;j<7;j++){ /* dark swirls */
+      g.beginPath();for(let s=0;s<=24;s++){const u=s/24,x=-Rb+u*2*Rb,y=(j/7-.45)*2*Rb+Math.sin(u*(3+j%3)+t*sp*.3*m+j*1.7)*Rb*.3;s?g.lineTo(x,y):g.moveTo(x,y)}
+      g.strokeStyle='rgba(2,0,10,.8)';g.lineWidth=Rb*(.12+.05*(j%3));g.lineCap='round';g.stroke();
+    }
+    g.globalCompositeOperation='lighter';
+    const cols=['63,176,255','47,107,255','255,79,216','192,91,255','127,220,255'];
+    for(let j=0;j<16;j++){
+      g.beginPath();for(let s=0;s<=24;s++){const u=s/24,x=-Rb+u*2*Rb,y=(j/16-.5)*1.8*Rb+Math.sin(u*(3+j%4)+t*sp*(.4+.05*j)*m+j)*Rb*.28+Math.sin(u*9+j*2-t*sp*.6*m)*Rb*.06;s?g.lineTo(x,y):g.moveTo(x,y)}
+      g.strokeStyle='rgba('+cols[j%5]+','+(.35+.4*((j*7)%5)/5)+')';g.lineWidth=1+(j%3)*2.2;g.stroke();
+    }
+    g.restore();
+    /* glowing ring */
+    const Rr=Rb*1.8;g.save();g.shadowColor='rgba(150,100,255,.9)';g.shadowBlur=12;g.lineJoin='round';
+    for(let i=0;i<7;i++){
+      g.beginPath();
+      for(let k=0;k<=120;k++){const a=k/120*Math.PI*2;
+        const w=Math.sin(a*3+t*(.8+i*.07)*m+i)*.012+Math.sin(a*5-t*1.1*m+i*1.3)*.01+Math.sin(a*8+t*2*m+i*.7)*.006;
+        const vo=amp*mod*(Math.sin(a*6+t*6*m+i)*.5+Math.sin(a*11-t*9*m+i*.4)*.3);
+        const r=Rr*(1+i*.008+w+vo*.14);
+        k?g.lineTo(Math.cos(a)*r,Math.sin(a)*r):g.moveTo(Math.cos(a)*r,Math.sin(a)*r)}
+      g.closePath();g.lineWidth=i<2?2:1;
+      g.strokeStyle=i%2?'rgba(245,232,255,'+(.35+.08*i)+')':'rgba(175,140,255,'+(.4+.05*i)+')';g.stroke();
+    }
+    g.restore();g.restore();
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
